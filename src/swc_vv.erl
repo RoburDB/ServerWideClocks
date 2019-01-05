@@ -48,10 +48,7 @@ is_key(VV, Id) ->
 %% in the VV, it returns 0.
 -spec get(id(), vv()) -> counter().
 get(K,V) ->
-    case maps:find(K,V) of
-        error   -> 0;
-        {ok, C} -> C
-    end.
+    maps:get(K, V, 0).
 
 %% @doc Merges or joins two VVs, taking the maximum counter if an entry is
 %% present in both VVs.
@@ -65,8 +62,7 @@ join(A,B) ->
 -spec left_join(vv(), vv()) -> vv().
 left_join(A,B) ->
     PeersA = maps:keys(A),
-    FunFilter = fun (Id,_) -> lists:member(Id, PeersA) end,
-    B2 = maps:filter(FunFilter, B),
+    B2 = maps:with(PeersA, B),
     map_merge(fun (_,C1,C2) -> max(C1,C2) end, A, B2).
 
 
@@ -86,16 +82,20 @@ add(VV, {Id, Counter}) ->
 %% @doc Returns the minimum counters from all the entries in the VV.
 -spec min(vv()) -> counter().
 min(VV) ->
-    Keys = maps:keys(VV),
-    Values = [maps:get(Key, VV) || Key <- Keys],
-    lists:min(Values).
+    maps:fold(fun(_Key, Val, undefined) ->
+                       Val;
+                  (_Key, Val, CurrentMin) when Val < CurrentMin ->
+                       Val;
+                  (_, _, CurrentMin) ->
+                       CurrentMin
+               end, undefined, VV).
 
 %% @doc Returns the key with the minimum counter associated.
 -spec min_key(vv()) -> id().
 min_key(VV) ->
     Fun = fun (Key, Value, undefined) -> {Key, Value};
-              (Key, Value, {MKey, MVal}) when Value < MVal -> {Key, Value};
-              (Key, Value, Acc) -> Acc
+              (Key, Value, {_MKey, MVal}) when Value < MVal -> {Key, Value};
+              (_Key, _Value, Acc) -> Acc
           end,
     {MinKey, _MinValue} = maps:fold(Fun, undefined, VV),
     MinKey.

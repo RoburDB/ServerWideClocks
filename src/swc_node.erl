@@ -48,51 +48,49 @@ ids(B) ->
 %% @doc Returns the entry of a BVV associated with a given ID.
 -spec get(id(), bvv()) -> entry().
 get(K,B) ->
-    case maps:find(K,B) of
-        error   -> {0,0};
-        {ok, E} -> E
-    end.
+    maps:get(K, B, {0, 0}).
 
 %% @doc Normalizes an entry pair, by removing dots and adding them to the base
 %% if they are contiguous with the base.
 -spec norm(entry()) -> entry().
 norm({N,B}) ->
+    norm(N, B).
+norm(N, B) ->
     case B rem 2 of
-        0 -> {N,B};
-        1 -> norm({N+1, B bsr 1})
+        0 -> {N, B};
+        1 -> norm(N + 1, B bsr 1)
     end.
 
 %% @doc Normalizes all entries in the BVV, using norm/2.
 -spec norm_bvv(bvv()) -> bvv().
 norm_bvv(BVV) ->
-    % normalize all entries
-    FunMap = fun (_Id, E) -> norm(E) end,
-    BVV1 = maps:map(FunMap, BVV),
-    % remove `{0,0}` entries
-    FunFilter = fun (_Id, E) -> E =/= {0,0} end,
-    maps:filter(FunFilter, BVV1).
+    maps:fold(fun(Id, E0, Acc) ->
+                      case norm(E0) of
+                          {0, 0} ->
+                              % remove `{0,0}` entries
+                              Acc;
+                          E1 ->
+                              maps:put(Id, E1, Acc)
+                      end
+              end, #{}, BVV).
 
 %% @doc Returns the dots in the first clock that are missing from the second clock,
 %% but only from entries in the list of ids received as argument.
 -spec missing_dots(bvv(), bvv(), [id()]) -> [{id(),[counter()]}].
 missing_dots(B1, B2, Ids) ->
     Fun =
-        fun (K,V,Acc) ->
-            case lists:member(K, Ids) of
-                false -> Acc;
-                true ->
-                    case maps:find(K,B2) of
-                        error ->
-                            [{K,values(V)} | Acc];
-                        {ok, V2} ->
-                            case subtract_dots(V,V2) of
-                                [] -> Acc;
-                                X -> [{K,X} | Acc]
-                            end
+    fun (K,V,Acc) ->
+            case maps:find(K,B2) of
+                error ->
+                    [{K,values(V)} | Acc];
+                {ok, V2} ->
+                    case subtract_dots(V,V2) of
+                        [] -> Acc;
+                        X -> [{K,X} | Acc]
                     end
             end
-        end,
-    maps:fold(Fun,[],B1).
+    end,
+    maps:fold(Fun, [], maps:with(Ids, B1)).
 
 
 -spec subtract_dots(entry(), entry()) -> [counter()].
@@ -132,9 +130,9 @@ add(BVV, {Id, Counter}) ->
 -spec add_aux(entry(), counter()) -> entry().
 add_aux({N,B}, M) ->
     case N < M of
-        false -> norm({N,B});
+        false -> norm(N, B);
         true  -> M2 = B bor (1 bsl (M-N-1)),
-                 norm({N,M2})
+                 norm(N, M2)
     end.
 
 %% @doc Merges all entries from the two BVVs.
@@ -155,8 +153,7 @@ map_merge(Fun, Map1, Map2) ->
 join(BVV1, BVV2) ->
     % filter keys from BVV2 that are not in BVV1
     K1 = maps:keys(BVV1),
-    Pred = fun (Id,_E) -> lists:member(Id, K1) end,
-    BVV2b = maps:filter(Pred, BVV2),
+    BVV2b = maps:with(K1, BVV2),
     % merge BVV1 with filtered BVV2b
     FunMerge = fun (_Id, E1, E2) -> join_aux(E1, E2) end,
     norm_bvv(map_merge(FunMerge, BVV1, BVV2b)).
@@ -176,7 +173,7 @@ base(BVV) ->
     % normalize all entries
     BVV1 = norm_bvv(BVV),
     % remove all non-contiguous counters w.r.t the base
-    Fun = fun (_Id, {N,_B}) -> {N,0} end,
+    Fun = fun (_Id, {N, _B}) -> {N, 0} end,
     maps:map(Fun, BVV1).
 
 %% @doc Takes a BVV at node Id and returns a pair with sequence number for a new
@@ -193,7 +190,7 @@ event(BVV, Id) ->
         error        -> 1
     end,
     % return the new counter and the updated BVV
-    {C, add(BVV, {Id,C})}.
+    {C, add(BVV, {Id, C})}.
 
 %% @doc Stores an Id-Entry pair in a BVV; if the id already exists, the
 %% associated entry is replaced by the new one.
