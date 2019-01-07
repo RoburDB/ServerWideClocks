@@ -28,69 +28,69 @@
         , store_entry/3
         ]).
 
+-export([map_merge/3]).
+
 -export_type([bvv/0]).
 
 %%====================================================================
 %% API functions
 %%====================================================================
 
-%% @doc Constructs an empty BVV (an orddict in Erlang).
+%% @doc Constructs an empty BVV (an map in Erlang).
 -spec new() -> bvv().
-new() -> orddict:new().
+new() -> maps:new().
 
 %% @doc Returns all IDs from the entries in a BVV.
 -spec ids(bvv()) -> [id()].
 ids(B) ->
-    orddict:fetch_keys(B).
+    maps:keys(B).
 
 %% @doc Returns the entry of a BVV associated with a given ID.
 -spec get(id(), bvv()) -> entry().
 get(K,B) ->
-    case orddict:find(K,B) of
-        error   -> {0,0};
-        {ok, E} -> E
-    end.
+    maps:get(K, B, {0, 0}).
 
 %% @doc Normalizes an entry pair, by removing dots and adding them to the base
 %% if they are contiguous with the base.
 -spec norm(entry()) -> entry().
 norm({N,B}) ->
+    norm(N, B).
+norm(N, B) ->
     case B rem 2 of
-        0 -> {N,B};
-        1 -> norm({N+1, B bsr 1})
+        0 -> {N, B};
+        1 -> norm(N + 1, B bsr 1)
     end.
 
 %% @doc Normalizes all entries in the BVV, using norm/2.
 -spec norm_bvv(bvv()) -> bvv().
 norm_bvv(BVV) ->
-    % normalize all entries
-    FunMap = fun (_Id, E) -> norm(E) end,
-    BVV1 = orddict:map(FunMap, BVV),
-    % remove `{0,0}` entries
-    FunFilter = fun (_Id, E) -> E =/= {0,0} end,
-    orddict:filter(FunFilter, BVV1).
+    maps:fold(fun(Id, E0, Acc) ->
+                      case norm(E0) of
+                          {0, 0} ->
+                              % remove `{0,0}` entries
+                              Acc;
+                          E1 ->
+                              maps:put(Id, E1, Acc)
+                      end
+              end, #{}, BVV).
 
 %% @doc Returns the dots in the first clock that are missing from the second clock,
 %% but only from entries in the list of ids received as argument.
 -spec missing_dots(bvv(), bvv(), [id()]) -> [{id(),[counter()]}].
 missing_dots(B1, B2, Ids) ->
     Fun =
-        fun (K,V,Acc) ->
-            case lists:member(K, Ids) of
-                false -> Acc;
-                true ->
-                    case orddict:find(K,B2) of
-                        error ->
-                            [{K,values(V)} | Acc];
-                        {ok, V2} ->
-                            case subtract_dots(V,V2) of
-                                [] -> Acc;
-                                X -> [{K,X} | Acc]
-                            end
+    fun (K,V,Acc) ->
+            case maps:find(K,B2) of
+                error ->
+                    [{K,values(V)} | Acc];
+                {ok, V2} ->
+                    case subtract_dots(V,V2) of
+                        [] -> Acc;
+                        X -> [{K,X} | Acc]
                     end
             end
-        end,
-    orddict:fold(Fun,[],B1).
+    end,
+    maps:fold(Fun, [], maps:with(Ids, B1)).
 
 
 -spec subtract_dots(entry(), entry()) -> [counter()].
@@ -124,33 +124,39 @@ values_aux(N,B,L) ->
 add(BVV, {Id, Counter}) ->
     Initial = add_aux({0,0}, Counter),
     Fun = fun (Entry) -> add_aux(Entry, Counter) end,
-    orddict:update(Id, Fun, Initial, BVV).
+    maps:update_with(Id, Fun, Initial, BVV).
 
 %% @doc Adds a dot to a BVV entry, returning the normalized entry.
 -spec add_aux(entry(), counter()) -> entry().
 add_aux({N,B}, M) ->
     case N < M of
-        false -> norm({N,B});
+        false -> norm(N, B);
         true  -> M2 = B bor (1 bsl (M-N-1)),
-                 norm({N,M2})
+                 norm(N, M2)
     end.
 
 %% @doc Merges all entries from the two BVVs.
 -spec merge(bvv(), bvv()) -> bvv().
 merge(BVV1, BVV2) ->
     FunMerge = fun (_Id, E1, E2) -> join_aux(E1, E2) end,
-    norm_bvv(orddict:merge(FunMerge, BVV1, BVV2)).
+    norm_bvv(map_merge(FunMerge, BVV1, BVV2)).
+
+map_merge(Fun, Map1, Map2) ->
+    maps:from_list(
+      orddict:to_list(
+        orddict:merge(Fun,
+                      orddict:from_list(maps:to_list(Map1)),
+                      orddict:from_list(maps:to_list(Map2))))).
 
 %% @doc Joins entries from BVV2 that are also IDs in BVV1, into BVV1.
 -spec join(bvv(), bvv()) -> bvv().
 join(BVV1, BVV2) ->
     % filter keys from BVV2 that are not in BVV1
-    K1 = orddict:fetch_keys(BVV1),
-    Pred = fun (Id,_E) -> lists:member(Id, K1) end,
-    BVV2b = orddict:filter(Pred, BVV2),
+    K1 = maps:keys(BVV1),
+    BVV2b = maps:with(K1, BVV2),
     % merge BVV1 with filtered BVV2b
     FunMerge = fun (_Id, E1, E2) -> join_aux(E1, E2) end,
-    norm_bvv(orddict:merge(FunMerge, BVV1, BVV2b)).
+    norm_bvv(map_merge(FunMerge, BVV1, BVV2b)).
 
 %% @doc Returns a (normalized) entry that results from the union of dots from
 %% two other entries. Auxiliary function used by join/2.
@@ -167,8 +173,8 @@ base(BVV) ->
     % normalize all entries
     BVV1 = norm_bvv(BVV),
     % remove all non-contiguous counters w.r.t the base
-    Fun = fun (_Id, {N,_B}) -> {N,0} end,
-    orddict:map(Fun, BVV1).
+    Fun = fun (_Id, {N, _B}) -> {N, 0} end,
+    maps:map(Fun, BVV1).
 
 %% @doc Takes a BVV at node Id and returns a pair with sequence number for a new
 %% event (dot) at node Id and the original BVV with the new dot added; this
@@ -178,22 +184,22 @@ base(BVV) ->
 -spec event(bvv(), id()) -> {counter(), bvv()}.
 event(BVV, Id) ->
     % find the next counter for Id
-    C = case orddict:find(Id, BVV) of
+    C = case maps:find(Id, BVV) of
         % since nodes call event with their Id, their entry always matches {N,0}
         {ok, {N,0}} -> N + 1;
         error        -> 1
     end,
     % return the new counter and the updated BVV
-    {C, add(BVV, {Id,C})}.
+    {C, add(BVV, {Id, C})}.
 
-%% @doc Stores an Id-Entry pair in a BVV; if the id already exists, the 
+%% @doc Stores an Id-Entry pair in a BVV; if the id already exists, the
 %% associated entry is replaced by the new one.
 store_entry(_Id, {0,0}, BVV) -> BVV;
 store_entry(Id, Entry={N,0}, BVV) ->
-    case orddict:find(Id, BVV) of
+    case maps:find(Id, BVV) of
         {ok, {N2,_}} when N2 >= N   -> BVV;
-        {ok, {N2,_}} when N2 <  N   -> orddict:store(Id, Entry, BVV);
-        error                       -> orddict:store(Id, Entry, BVV)
+        {ok, {N2,_}} when N2 <  N   -> maps:put(Id, Entry, BVV);
+        error                       -> maps:put(Id, Entry, BVV)
     end.
 
 
@@ -207,8 +213,8 @@ store_entry(Id, Entry={N,0}, BVV) ->
 norm_test() ->
     ?assertEqual( norm({5,3}), {7,0} ),
     ?assertEqual( norm({5,2}), {5,2} ),
-    ?assertEqual( norm_bvv( [{"a",{0,0}}] ), [] ),
-    ?assertEqual( norm_bvv( [{"a",{5,3}}] ), [{"a",{7,0}}] ).
+    ?assertEqual( norm_bvv( #{"a" => {0,0}} ), #{} ),
+    ?assertEqual( norm_bvv( #{"a" => {5,3}} ), #{"a" => {7,0}} ).
 
 values_test() ->
     ?assertEqual( lists:sort( values({0,0}) ), lists:sort( [] )),
@@ -216,14 +222,14 @@ values_test() ->
     ?assertEqual( lists:sort( values({2,5}) ), lists:sort( [1,2,3,5] )).
 
 missing_dots_test() ->
-    B1 = [{"a",{12,0}}, {"b",{7,0}}, {"c",{4,0}}, {"d",{5,0}}, {"e",{5,0}}, {"f",{7,10}}, {"g",{5,10}}, {"h",{5,14}}],
-    B2 = [{"a",{5,14}}, {"b",{5,14}}, {"c",{5,14}}, {"d",{5,14}}, {"e",{15,0}}, {"f",{5,14}}, {"g",{7,10}}, {"h",{7,10}}],
+    B1 = #{"a" => {12,0}, "b" => {7,0}, "c" => {4,0}, "d" => {5,0}, "e" => {5,0}, "f" => {7,10}, "g" => {5,10}, "h" => {5,14}},
+    B2 = #{"a" => {5,14}, "b" => {5,14}, "c" => {5,14}, "d" => {5,14}, "e" => {15,0}, "f" => {5,14}, "g" => {7,10}, "h" => {7,10}},
     ?assertEqual( lists:sort(missing_dots(B1,B2,[])), []),
     ?assertEqual( lists:sort(missing_dots(B1,B2,["a","b","c","d","e","f","g","h"])), [{"a",[6,10,11,12]}, {"b",[6]}, {"f",[6,11]}, {"h",[8]}]),
     ?assertEqual( lists:sort(missing_dots(B1,B2,["a","c","d","e","f","g","h"])), [{"a",[6,10,11,12]}, {"f",[6,11]}, {"h",[8]}]),
-    ?assertEqual( lists:sort(missing_dots([{"a",{2,2}}, {"b",{3,0}}], [], ["a"])), [{"a",[1,2,4]}]),
-    ?assertEqual( lists:sort(missing_dots([{"a",{2,2}}, {"b",{3,0}}], [], ["a","b"])), [{"a",[1,2,4]}, {"b",[1,2,3]}]),
-    ?assertEqual( missing_dots([], B1, ["a","b","c","d","e","f","g","h"]), []).
+    ?assertEqual( lists:sort(missing_dots(#{"a" => {2,2}, "b" => {3,0}}, #{}, ["a"])), [{"a",[1,2,4]}]),
+    ?assertEqual( lists:sort(missing_dots(#{"a" => {2,2}, "b" => {3,0}}, #{}, ["a","b"])), [{"a",[1,2,4]}, {"b",[1,2,3]}]),
+    ?assertEqual( missing_dots(#{}, B1, ["a","b","c","d","e","f","g","h"]), []).
 
 
 subtract_dots_test() ->
@@ -237,10 +243,10 @@ subtract_dots_test() ->
     ?assertEqual( subtract_dots({5,14},{7,10}), [8]).
 
 add_test() ->
-    ?assertEqual( add( [{"a",{5,3}}] , {"b",0} ), [{"a",{5,3}}, {"b",{0,0}}] ),
-    ?assertEqual( add( [{"a",{5,3}}] , {"a",1} ), [{"a",{7,0}}] ),
-    ?assertEqual( add( [{"a",{5,3}}] , {"a",8} ), [{"a",{8,0}}] ),
-    ?assertEqual( add( [{"a",{5,3}}] , {"b",8} ), [{"a",{5,3}}, {"b",{0,128}}] ).
+    ?assertEqual( add( #{"a" => {5,3}}, {"b",0} ), #{"a" => {5,3}, "b" => {0,0}} ),
+    ?assertEqual( add( #{"a" => {5,3}}, {"a",1} ), #{"a" => {7,0}} ),
+    ?assertEqual( add( #{"a" => {5,3}}, {"a",8} ), #{"a" => {8,0}} ),
+    ?assertEqual( add( #{"a" => {5,3}}, {"b",8} ), #{"a" => {5,3}, "b" => {0,128}} ).
 
 add_aux_test() ->
     ?assertEqual( add_aux({5,3}, 8), {8,0} ),
@@ -251,18 +257,18 @@ add_aux_test() ->
     ?assertEqual( add_aux({2,4}, 6), {2,12} ).
 
 merge_test() ->
-    ?assertEqual( merge( [{"a",{5,3}}] , [{"a",{2,4}}] ), [{"a",{7,0}}] ),
-    ?assertEqual( merge( [{"a",{5,3}}] , [{"b",{2,4}}] ), [{"a",{7,0}}, {"b",{2,4}}] ),
-    ?assertEqual( merge( [{"a",{5,3}}, {"c",{1,2}}] , [{"b",{2,4}}, {"d",{5,3}}] ),
-                  [{"a",{7,0}}, {"b",{2,4}}, {"c",{1,2}}, {"d",{7,0}}] ),
-    ?assertEqual( merge( [{"a",{5,3}}, {"c",{1,2}}] , [{"b",{2,4}}, {"c",{5,3}}] ), 
-                  [{"a",{7,0}}, {"b",{2,4}}, {"c",{7,0}}]).
+    ?assertEqual( merge( #{"a" => {5,3}} , #{"a" => {2,4}} ), #{"a" => {7,0}} ),
+    ?assertEqual( merge( #{"a" => {5,3}} , #{"b" => {2,4}} ), #{"a" => {7,0}, "b" => {2,4}} ),
+    ?assertEqual( merge( #{"a" => {5,3}, "c" => {1,2}} , #{"b" => {2,4}, "d" => {5,3}} ),
+                  #{"a" => {7,0}, "b" => {2,4}, "c" => {1,2}, "d" => {7,0}} ),
+    ?assertEqual( merge( #{"a" => {5,3}, "c" => {1,2}} , #{"b" => {2,4}, "c" => {5,3}} ),
+                  #{"a" => {7,0}, "b" => {2,4}, "c" => {7,0}}).
 
 join_test() ->
-    ?assertEqual( join( [{"a",{5,3}}] , [{"a",{2,4}}] ), [{"a",{7,0}}] ),
-    ?assertEqual( join( [{"a",{5,3}}] , [{"b",{2,4}}] ), [{"a",{7,0}}] ),
-    ?assertEqual( join( [{"a",{5,3}}, {"c",{1,2}}] , [{"b",{2,4}}, {"d",{5,3}}] ), [{"a",{7,0}}, {"c",{1,2}}] ),
-    ?assertEqual( join( [{"a",{5,3}}, {"c",{1,2}}] , [{"b",{2,4}}, {"c",{5,3}}] ), [{"a",{7,0}}, {"c",{7,0}}] ).
+    ?assertEqual( join( #{"a" => {5,3}} , #{"a" => {2,4}} ), #{"a" => {7,0}} ),
+    ?assertEqual( join( #{"a" => {5,3}} , #{"b" => {2,4}} ), #{"a" => {7,0}} ),
+    ?assertEqual( join( #{"a" => {5,3}, "c" => {1,2}} , #{"b" => {2,4}, "d" => {5,3}} ), #{"a" => {7,0}, "c" => {1,2}} ),
+    ?assertEqual( join( #{"a" => {5,3}, "c" => {1,2}} , #{"b" => {2,4}, "c" => {5,3}} ), #{"a" => {7,0}, "c" => {7,0}} ).
 
 join_aux_test() ->
     ?assertEqual( join_aux({5,3}, {2,4}), join_aux({2,4}, {5,3}) ),
@@ -275,24 +281,24 @@ join_aux_test() ->
     ?assertEqual( join_aux({3,2}, {1,16}), {3,6} ).
 
 base_test() ->
-    ?assertEqual( base( [{"a",{5,3}}] ), [{"a",{7,0}}] ),
-    ?assertEqual( base( [{"a",{5,2}}] ), [{"a",{5,0}}] ),
-    ?assertEqual( base( [{"a",{5,3}}, {"b",{2,4}}, {"c",{1,2}}, {"d",{5,2}}] ), 
-                        [{"a",{7,0}}, {"b",{2,0}}, {"c",{1,0}}, {"d",{5,0}}] ).
+    ?assertEqual( base( #{"a" => {5,3}} ), #{"a" => {7,0}} ),
+    ?assertEqual( base( #{"a" => {5,2}} ), #{"a" => {5,0}} ),
+    ?assertEqual( base( #{"a" => {5,3}, "b" => {2,4}, "c" => {1,2}, "d"=> {5,2}} ),
+                        #{"a" => {7,0}, "b" => {2,0}, "c" => {1,0}, "d"=> {5,0}} ).
 
 
 event_test() ->
-    ?assertEqual( event( [{"a",{7,0}}] , "a"), {8, [{"a",{8,0}}]} ),
-    ?assertEqual( event( [{"a",{5,3}}] , "b"), {1, [{"a",{5,3}}, {"b",{1,0}}]} ),
-    ?assertEqual( event( [{"a",{5,3}}, {"b",{2,0}}, {"c",{1,2}}, {"d",{5,3}}] , "b"), 
-                        {3, [{"a",{5,3}}, {"b",{3,0}}, {"c",{1,2}}, {"d",{5,3}}]} ).
+    ?assertEqual( event( #{"a" => {7,0}} , "a"), {8, #{"a" => {8,0}}} ),
+    ?assertEqual( event( #{"a" => {5,3}} , "b"), {1, #{"a" => {5,3}, "b" => {1,0}}} ),
+    ?assertEqual( event( #{"a" => {5,3}, "b" => {2,0}, "c" => {1,2}, "d" => {5,3}} , "b"),
+                        {3, #{"a" => {5,3}, "b" => {3,0}, "c" => {1,2}, "d" => {5,3}}} ).
 
 
 store_entry_test() ->
-    ?assertEqual( store_entry( "a", {0,0}, [{"a",{7,0}}]), [{"a",{7,0}}] ),
-    ?assertEqual( store_entry( "b", {0,0}, [{"a",{7,0}}]), [{"a",{7,0}}] ),
-    ?assertEqual( store_entry( "a", {9,0}, [{"a",{7,0}}]), [{"a",{9,0}}] ),
-    ?assertEqual( store_entry( "a", {90,0}, [{"a",{7,1234}}]), [{"a",{90,0}}] ),
-    ?assertEqual( store_entry( "b", {9,0}, [{"a",{7,0}}]), [{"a",{7,0}}, {"b",{9,0}}] ).
+    ?assertEqual( store_entry( "a", {0,0}, #{"a" => {7,0}}), #{"a" => {7,0}} ),
+    ?assertEqual( store_entry( "b", {0,0}, #{"a" => {7,0}}), #{"a" => {7,0}} ),
+    ?assertEqual( store_entry( "a", {9,0}, #{"a" => {7,0}}), #{"a" => {9,0}} ),
+    ?assertEqual( store_entry( "a", {90,0},#{"a" => {7,1234}}), #{"a" => {90,0}} ),
+    ?assertEqual( store_entry( "b", {9,0}, #{"a" => {7,0}}), #{"a" => {7,0}, "b" => {9,0}} ).
 
 -endif.
