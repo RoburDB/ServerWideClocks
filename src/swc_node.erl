@@ -122,9 +122,8 @@ values_aux(N,B,L) ->
 %% @doc Adds a dot (ID, Counter) to a BVV.
 -spec add(bvv(), {id(), counter()}) -> bvv().
 add(BVV, {Id, Counter}) ->
-    Initial = add_aux({0,0}, Counter),
-    Fun = fun (Entry) -> add_aux(Entry, Counter) end,
-    maps:update_with(Id, Fun, Initial, BVV).
+    Entry = maps:get(Id, BVV, {0,0}),
+    maps:put(Id, add_aux(Entry, Counter), BVV).
 
 %% @doc Adds a dot to a BVV entry, returning the normalized entry.
 -spec add_aux(entry(), counter()) -> entry().
